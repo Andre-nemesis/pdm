@@ -1,168 +1,63 @@
 // classifier.dart
-// Este arquivo está preparado para integração do modelo TFLite
-// Descomente e configure após treinar o modelo
-
-/*
-import 'dart:math';
-import 'package:flutter/services.dart';
+import 'dart:typed_data';
 import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:dart_bert_tokenizer/dart_bert_tokenizer.dart';
 
-Interpreter? _interpreter;
-WordPieceTokenizer? _tokenizer;
+class SpamClassifier {
+  static Interpreter? _interpreter;
+  static bool _initialized = false;
 
-/// Carrega o modelo TFLite e o tokenizador BERT
-/// Deve ser chamado antes de usar classifyWithTFLite
-Future<void> loadModelAndTokenizer() async {
-  if (_interpreter == null) {
-    _interpreter = await Interpreter.fromAsset('assets/model.tflite');
-    print('✅ Modelo TFLite carregado com sucesso');
-  }
-  
-  if (_tokenizer == null) {
-    final vocabText = await rootBundle.loadString('assets/vocab.txt');
-    final vocabLines = vocabText.split('\n');
-    final vocabList = vocabLines
-        .map((line) => line.trim())
-        .where((token) => token.isNotEmpty)
-        .toList();
-    final vocabulary = Vocabulary.fromTokens(vocabList);
-    _tokenizer = WordPieceTokenizer(vocab: vocabulary);
-    print('✅ Tokenizador carregado com sucesso');
-  }
-}
+  /// Inicializa o modelo (chamar uma vez)
+  static Future<void> initialize() async {
+    if (_initialized) return;
 
-/// Classifica um texto como spam ou não-spam usando o modelo TFLite
-/// 
-/// Parâmetros:
-///   - text: O texto a ser classificado
-/// 
-/// Retorna:
-///   - true se o texto for spam
-///   - false se o texto for legítimo
-/// 
-/// Exemplo de uso:
-/// ```dart
-/// final isSpam = await classifyWithTFLite('Você ganhou R$1000! Clique aqui!');
-/// if (isSpam) {
-///   print('⚠️ Spam detectado!');
-/// } else {
-///   print('✅ Mensagem segura');
-/// }
-/// ```
-Future<bool> classifyWithTFLite(String text) async {
-  await loadModelAndTokenizer();
+    _interpreter = await Interpreter.fromAsset(
+      'email_spam_classifier.tflite',
+      options: InterpreterOptions()
+        ..threads = 2
+        ..useNnApiForAndroid = true,
+    );
 
-  // Tokenizar o texto
-  final encoding = _tokenizer!.encode(text);
-  
-  // Preparar inputs para o modelo
-  // Ajuste max_length conforme foi usado no treinamento (geralmente 128)
-  const maxLength = 128;
-  
-  // Preencher ou truncar para maxLength
-  List<int> paddedIds = List.filled(maxLength, 0);
-  List<int> paddedMask = List.filled(maxLength, 0);
-  List<int> paddedTypeIds = List.filled(maxLength, 0);
-  
-  for (int i = 0; i < min(encoding.ids.length, maxLength); i++) {
-    paddedIds[i] = encoding.ids[i];
-    paddedMask[i] = 1; // 1 para tokens reais, 0 para padding
-    paddedTypeIds[i] = encoding.typeIds?[i] ?? 0;
+    _initialized = true;
+    print('✅ Classificador TFLite carregado');
   }
 
-  // Formatar para o modelo (batch_size = 1)
-  final inputIds = [paddedIds];
-  final attentionMask = [paddedMask];
-  final tokenTypeIds = [paddedTypeIds];
+  /// Classifica um texto
+  /// Retorna true = SPAM | false = HAM
+  static Future<bool> getProbability(String text) async {
+    await initialize();
 
-  // Preparar output
-  var output = List.generate(1, (_) => List.filled(2, 0.0)); // 2 classes: não-spam, spam
-  final outputs = {0: output};
+    // 🔹 Modelo espera batch de strings
+    final input = <String>[text];
 
-  // Executar inferência
-  _interpreter!.runForMultipleInputs(
-    [inputIds, attentionMask, tokenTypeIds],
-    outputs,
-  );
+    // 🔹 Saída: [[prob]]
+    final output = List.generate(1, (_) => List.filled(1, 0.0));
 
-  // Obter probabilidades
-  // output[0][0] = probabilidade de não-spam
-  // output[0][1] = probabilidade de spam
-  double spamProb = output[0][1];
-  
-  print('📊 Probabilidade de spam: ${(spamProb * 100).toStringAsFixed(2)}%');
-  
-  // Retorna true se probabilidade de spam > 50%
-  return spamProb > 0.5;
-}
+    _interpreter!.run(input, output);
 
-/// Classifica múltiplas mensagens de uma vez
-/// Útil para processar lotes de emails
-Future<List<bool>> classifyBatch(List<String> texts) async {
-  await loadModelAndTokenizer();
-  
-  List<bool> results = [];
-  for (String text in texts) {
-    final isSpam = await classifyWithTFLite(text);
-    results.add(isSpam);
-  }
-  
-  return results;
-}
+    final double probability = output[0][0];
 
-/// Obtém a probabilidade de spam (0.0 a 1.0) ao invés de apenas true/false
-Future<double> getSpamProbability(String text) async {
-  await loadModelAndTokenizer();
+    print('📊 Probabilidade de spam: $probability');
 
-  final encoding = _tokenizer!.encode(text);
-  const maxLength = 128;
-  
-  List<int> paddedIds = List.filled(maxLength, 0);
-  List<int> paddedMask = List.filled(maxLength, 0);
-  List<int> paddedTypeIds = List.filled(maxLength, 0);
-  
-  for (int i = 0; i < min(encoding.ids.length, maxLength); i++) {
-    paddedIds[i] = encoding.ids[i];
-    paddedMask[i] = 1;
-    paddedTypeIds[i] = encoding.typeIds?[i] ?? 0;
+    return probability >= 0.5;
   }
 
-  final inputIds = [paddedIds];
-  final attentionMask = [paddedMask];
-  final tokenTypeIds = [paddedTypeIds];
+  /// Retorna apenas a probabilidade (0.0 → 1.0)
+  static Future<double> spamProbability(String text) async {
+    await initialize();
 
-  var output = List.generate(1, (_) => List.filled(2, 0.0));
-  final outputs = {0: output};
+    final input = <String>[text];
+    final output = List.generate(1, (_) => List.filled(1, 0.0));
 
-  _interpreter!.runForMultipleInputs(
-    [inputIds, attentionMask, tokenTypeIds],
-    outputs,
-  );
+    _interpreter!.run(input, output);
 
-  return output[0][1]; // Retorna probabilidade de spam
+    return output[0][0];
+  }
+
+  /// Libera recursos (opcional)
+  static void dispose() {
+    _interpreter?.close();
+    _interpreter = null;
+    _initialized = false;
+    print('🗑️ Classificador finalizado');
+  }
 }
-
-/// Libera recursos do modelo e tokenizador
-/// Chame quando não for mais usar o classificador
-void dispose() {
-  _interpreter?.close();
-  _interpreter = null;
-  _tokenizer = null;
-  print('🗑️ Recursos do classificador liberados');
-}
-*/
-
-// TODO: Após treinar o modelo:
-// 1. Adicione model.tflite em assets/
-// 2. Adicione vocab.txt em assets/
-// 3. Atualize pubspec.yaml com:
-//    flutter:
-//      assets:
-//        - assets/model.tflite
-//        - assets/vocab.txt
-// 4. Descomente todo este arquivo
-// 5. Instale as dependências:
-//    flutter pub add tflite_flutter
-//    flutter pub add dart_bert_tokenizer
-// 6. Descomente as chamadas nas telas (login_screen.dart, analysis_screen.dart)
